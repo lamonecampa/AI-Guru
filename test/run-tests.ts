@@ -285,6 +285,20 @@ async function runAllTests() {
     assert.strictEqual(retried.progressPercentage, 100);
   });
 
+  // 10. Timing-Safe Authentication & Password Verification
+  test('16. Otentikasi Aman: Hash Sandi PBKDF2 & Verifikasi Timing-Safe', () => {
+    const rawPass = 'GuruHebat2026!';
+    const hash = db.hashPassword(rawPass);
+    assert.ok(hash.length > 32);
+
+    // Correct password must match
+    assert.strictEqual(db.verifyPassword(rawPass, hash), true);
+
+    // Wrong password must fail
+    assert.strictEqual(db.verifyPassword('SalahSandi123', hash), false);
+    assert.strictEqual(db.verifyPassword('', hash), false);
+  });
+
   console.log(`\nHasil Pengujian: ${passed} / ${total} lulus.\n`);
   if (passed !== total) {
     process.exit(1);

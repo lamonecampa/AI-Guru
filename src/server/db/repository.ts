@@ -47,7 +47,10 @@ export class SchoolRepository {
   }
 
   public verifyPassword(password: string, hash: string): boolean {
-    return this.hashPassword(password) === hash;
+    const computed = Buffer.from(this.hashPassword(password));
+    const target = Buffer.from(hash);
+    if (computed.length !== target.length) return false;
+    return crypto.timingSafeEqual(computed, target);
   }
 
   // Seeding realistic Indonesian educational dataset

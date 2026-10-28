@@ -6,3 +6,23 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Uploaded images and student data
+uploads/
+storage/
+temp/
+*.tmp
+
+# Credentials, keys and certificates
+*.pem
+*.key
+*.cert
+*.crt
+credentials.json
+
+# Local databases & dumps
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+
