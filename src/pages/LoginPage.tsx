@@ -46,7 +46,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
     }
   };
 
-  const handleQuickDemo = async (role: 'TEACHER_SITI' | 'TEACHER_BUDI' | 'SCHOOL_ADMIN' | 'PLATFORM_ADMIN') => {
+  const handleQuickDemo = async (role: 'TEACHER_SITI' | 'TEACHER_BUDI' | 'SCHOOL_ADMIN' | 'SUPERADMIN' | 'PLATFORM_ADMIN') => {
     setLoading(true);
     setErrorMsg('');
     try {
@@ -210,11 +210,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSuccess }) => {
               </button>
               <button
                 type="button"
-                onClick={() => handleQuickDemo('PLATFORM_ADMIN')}
+                onClick={() => handleQuickDemo('SUPERADMIN')}
                 className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-800 rounded-lg text-left"
               >
-                <div className="font-bold text-slate-900">Superadmin</div>
-                <div className="text-[10px] text-slate-700">Platform Admin</div>
+                <div className="font-bold text-slate-900">Dr. Hendra, M.Kom</div>
+                <div className="text-[10px] text-slate-700">Superadmin Platform</div>
               </button>
             </div>
           </div>

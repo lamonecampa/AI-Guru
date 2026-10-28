@@ -99,7 +99,7 @@ export class SchoolRepository {
       email: 'superadmin@aiteachergrader.id',
       passwordHash: passHash,
       fullName: 'Dr. Hendra Wijaya, M.Kom',
-      role: 'PLATFORM_ADMIN',
+      role: 'SUPERADMIN',
       avatarUrl: '/src/assets/images/avatar_teacher_male_1793153724340.jpg',
       isActive: true,
       createdAt: '2026-01-01T08:00:00Z',
@@ -694,10 +694,177 @@ export class SchoolRepository {
       planType: data.planType || 'FREE_TRIAL',
       quotaLimit: 100,
       quotaUsed: 0,
+      status: 'ACTIVE',
       createdAt: new Date().toISOString(),
     };
     this.organizations.set(id, org);
     return org;
+  }
+
+  // School Admin: Teacher Management
+  public getTeachers(orgId: string): Array<Omit<UserRecord, 'passwordHash'>> {
+    return Array.from(this.users.values())
+      .filter(u => u.orgId === orgId && (u.role === 'TEACHER' || u.role === 'SCHOOL_ADMIN'))
+      .map(({ passwordHash: _, ...u }) => u);
+  }
+
+  public createTeacher(orgId: string, data: { email: string; fullName: string; nip?: string }): Omit<UserRecord, 'passwordHash'> {
+    if (this.getUserByEmail(data.email)) {
+      throw new Error('Email guru sudah terdaftar di sistem.');
+    }
+    const defaultPassword = this.hashPassword('GuruHebat2026!');
+    const user = this.createUser({
+      orgId,
+      email: data.email,
+      passwordHash: defaultPassword,
+      fullName: data.fullName,
+      nip: data.nip,
+      role: 'TEACHER',
+      isActive: true,
+      avatarUrl: '/src/assets/images/avatar_teacher_female_1793153723050.jpg',
+    });
+    const { passwordHash: _, ...safeUser } = user;
+    return safeUser;
+  }
+
+  public toggleTeacherStatus(orgId: string, teacherId: string, isActive: boolean): Omit<UserRecord, 'passwordHash'> {
+    const user = this.users.get(teacherId);
+    if (!user || user.orgId !== orgId) {
+      throw new Error('Data guru tidak ditemukan dalam sekolah ini.');
+    }
+    user.isActive = isActive;
+    const { passwordHash: _, ...safeUser } = user;
+    return safeUser;
+  }
+
+  public updateSchoolSettings(orgId: string, updates: Partial<OrganizationModel>): OrganizationModel {
+    const org = this.organizations.get(orgId);
+    if (!org) {
+      throw new Error('Organisasi sekolah tidak ditemukan.');
+    }
+    Object.assign(org, updates);
+    return org;
+  }
+
+  // Superadmin: Platform Oversight & Governance
+  public getAllOrganizationsDetailed() {
+    return Array.from(this.organizations.values()).map(org => {
+      const teachers = Array.from(this.users.values()).filter(u => u.orgId === org.id && u.role === 'TEACHER');
+      const students = Array.from(this.students.values()).filter(s => s.orgId === org.id);
+      const classes = Array.from(this.classes.values()).filter(c => c.orgId === org.id);
+      const exams = Array.from(this.exams.values()).filter(e => e.orgId === org.id);
+      const submissions = Array.from(this.submissions.values()).filter(s => s.orgId === org.id);
+
+      return {
+        ...org,
+        status: org.status || 'ACTIVE',
+        teacherCount: teachers.length,
+        studentCount: students.length,
+        classCount: classes.length,
+        examCount: exams.length,
+        submissionCount: submissions.length,
+      };
+    });
+  }
+
+  public toggleOrganizationStatus(orgId: string, status: 'ACTIVE' | 'SUSPENDED'): OrganizationModel {
+    const org = this.organizations.get(orgId);
+    if (!org) throw new Error('Organisasi tidak ditemukan.');
+    org.status = status;
+    return org;
+  }
+
+  public updateOrganizationQuota(orgId: string, quotaLimit: number, planType: any): OrganizationModel {
+    const org = this.organizations.get(orgId);
+    if (!org) throw new Error('Organisasi tidak ditemukan.');
+    org.quotaLimit = quotaLimit;
+    if (planType) org.planType = planType;
+    return org;
+  }
+
+  public getAllPlatformUsers(): Array<Omit<UserRecord, 'passwordHash'> & { orgName: string }> {
+    return Array.from(this.users.values()).map(({ passwordHash: _, ...u }) => {
+      const org = this.organizations.get(u.orgId);
+      return {
+        ...u,
+        orgName: org?.name || 'Platform Admin',
+      };
+    });
+  }
+
+  public getPlatformUsageMetrics() {
+    const totalSubmissions = Array.from(this.submissions.values()).length;
+    const totalJobs = Array.from(this.gradingJobs.values()).length;
+    const completedJobs = Array.from(this.gradingJobs.values()).filter(j => j.status === 'COMPLETED').length;
+
+    return {
+      totalSubmissions,
+      totalGradingJobs: totalJobs,
+      completedJobsRate: totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 100,
+      activeOrganizationsCount: Array.from(this.organizations.values()).filter(o => o.status !== 'SUSPENDED').length,
+      totalTeachersCount: Array.from(this.users.values()).filter(u => u.role === 'TEACHER').length,
+      dailyVolume: [
+        { date: 'Senin, 20 Okt', count: 48 },
+        { date: 'Selasa, 21 Okt', count: 72 },
+        { date: 'Rabu, 22 Okt', count: 110 },
+        { date: 'Kamis, 23 Okt', count: 86 },
+        { date: 'Jumat, 24 Okt', count: 145 },
+        { date: 'Sabtu, 25 Okt', count: 32 },
+        { date: 'Hari Ini', count: 64 },
+      ],
+      questionTypeDistribution: {
+        multipleChoice: 78,
+        shortAnswer: 12,
+        essay: 10,
+      },
+    };
+  }
+
+  public getAICostMetrics() {
+    return {
+      model: 'gemini-2.5-flash',
+      totalApiCalls: 1420,
+      promptTokens: 2840000,
+      candidateTokens: 710000,
+      totalTokens: 3550000,
+      estimatedCostUsd: 1.42,
+      estimatedCostIdr: 22720,
+      averageLatencyMs: 1180,
+      ocrConfidenceRate: 97.4,
+      uncertaintyFlagRate: 4.8,
+      costPerSubmissionIdr: 16,
+    };
+  }
+
+  public getSystemHealthMetrics() {
+    return {
+      status: 'HEALTHY',
+      serverUptimeHours: 72.4,
+      memoryUsageMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      activeWorkers: 4,
+      queueDepth: Array.from(this.gradingJobs.values()).filter(j => j.status === 'PROCESSING' || j.status === 'QUEUED').length,
+      failedJobs24h: Array.from(this.gradingJobs.values()).filter(j => j.status === 'FAILED').length,
+      geminiApiStatus: 'OPERATIONAL',
+      geminiLatencyMs: 310,
+      databaseStatus: 'HEALTHY (In-Memory Repository with Multi-Tenant Scoping)',
+    };
+  }
+
+  private platformSettings = {
+    maintenanceMode: false,
+    activeModel: 'gemini-2.5-flash',
+    maxUploadMb: 30,
+    concurrencyLimit: 10,
+    autoApproveAboveConfidence: 0.95,
+  };
+
+  public getPlatformSettings() {
+    return this.platformSettings;
+  }
+
+  public updatePlatformSettings(updates: any) {
+    this.platformSettings = { ...this.platformSettings, ...updates };
+    return this.platformSettings;
   }
 
   // Classes
@@ -880,7 +1047,7 @@ export class SchoolRepository {
     if (!exam || exam.orgId !== user.orgId) return false;
 
     // Platform and school admins can manage any exam in their org
-    if (user.role === 'PLATFORM_ADMIN' || user.role === 'SCHOOL_ADMIN') return true;
+    if (user.role === 'PLATFORM_ADMIN' || user.role === 'SUPERADMIN' || user.role === 'SCHOOL_ADMIN') return true;
 
     // Teacher can manage if they created it or teach an assigned class
     if (exam.createdById === user.id) return true;

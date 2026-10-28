@@ -65,6 +65,14 @@ apiRouter.post('/auth/login', (req, res) => {
 });
 
 apiRouter.post('/auth/register', (req, res) => {
+  // Reject role elevation attempts
+  if (req.body.role && (req.body.role === 'SUPERADMIN' || req.body.role === 'PLATFORM_ADMIN')) {
+    return res.status(403).json({
+      success: false,
+      error: 'Pendaftaran mandiri sebagai SUPERADMIN dilarang oleh kebijakan keamanan platform.',
+    });
+  }
+
   const parse = RegisterSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ success: false, error: parse.error.issues[0]?.message });
@@ -108,12 +116,14 @@ apiRouter.post('/auth/demo-switch', (req, res) => {
   const { role } = req.body;
   let targetEmail = 'guru.siti@smpn1nusantara.sch.id';
 
-  if (role === 'PLATFORM_ADMIN') {
+  if (role === 'SUPERADMIN' || role === 'PLATFORM_ADMIN') {
     targetEmail = 'superadmin@aiteachergrader.id';
   } else if (role === 'SCHOOL_ADMIN') {
     targetEmail = 'admin@smpn1nusantara.sch.id';
   } else if (role === 'TEACHER_BUDI') {
     targetEmail = 'guru.budi@smpn1nusantara.sch.id';
+  } else {
+    targetEmail = 'guru.siti@smpn1nusantara.sch.id';
   }
 
   const user = db.getUserByEmail(targetEmail);
@@ -632,6 +642,14 @@ apiRouter.get('/submissions/:id', requireAuth, (req: AuthenticatedRequest, res: 
 
 // Manual Teacher Score Override with mandatory reason
 apiRouter.post('/submissions/:id/override', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  // Superadmin cannot directly override student grades without audited technical support workflow
+  if (req.user!.role === 'SUPERADMIN' || req.user!.role === 'PLATFORM_ADMIN') {
+    return res.status(403).json({
+      success: false,
+      error: 'Akses ditolak: Superadmin dilarang mengubah nilai siswa secara langsung. Modifikasi nilai siswa dilindungi privasi data sekolah dan memerlukan wewenang guru pengampu.',
+    });
+  }
+
   const parse = ScoreOverrideSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ success: false, error: parse.error.issues[0]?.message });
@@ -641,6 +659,27 @@ apiRouter.post('/submissions/:id/override', requireAuth, (req: AuthenticatedRequ
   const orgId = req.user!.orgId;
   const sub = db.getSubmissionById(orgId, req.params.id);
   if (!sub) return res.status(404).json({ success: false, error: 'Lembar jawaban tidak ditemukan.' });
+
+  // Teacher can only override permitted exams/classes
+  if (req.user!.role === 'TEACHER') {
+    const canManage = db.canUserManageExam(req.user!, sub.examId);
+    if (!canManage) {
+      return res.status(403).json({
+        success: false,
+        error: 'Akses ditolak: Anda hanya berwenang mengubah nilai untuk ujian dan kelas yang Anda ampu.',
+      });
+    }
+  }
+
+  // School Admin requires clear official justification
+  if (req.user!.role === 'SCHOOL_ADMIN') {
+    if (!reason || reason.trim().length < 5) {
+      return res.status(400).json({
+        success: false,
+        error: 'Administrator sekolah wajib menyertakan alasan kebijakan resmi untuk penyesuaian nilai.',
+      });
+    }
+  }
 
   const oldScore = sub.finalScore;
   const exam = db.getExamById(orgId, sub.examId);
@@ -891,15 +930,333 @@ apiRouter.get('/billing', requireAuth, (req: AuthenticatedRequest, res: Response
   });
 });
 
-// Admin Console (Platform Administrator Only)
-apiRouter.get('/admin/organizations', requireAuth, requireRole('PLATFORM_ADMIN'), (_req, res) => {
+// ==========================================
+// SCHOOL ADMIN ENDPOINTS (/api/school/*)
+// Enforces tenant isolation strictly via req.user.orgId
+// ==========================================
+
+apiRouter.get('/school/dashboard', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const orgId = req.user!.orgId;
+  const org = db.getOrganization(orgId);
+  const teachers = db.getTeachers(orgId);
+  const classes = db.getClasses(orgId);
+  const students = db.getStudents(orgId);
+  const exams = db.getExams(orgId);
+  const submissions = db.getSubmissions(orgId);
+  const completedSubs = submissions.filter(s => s.status === 'COMPLETED');
+
+  const avgScore = completedSubs.length > 0
+    ? Math.round((completedSubs.reduce((acc, s) => acc + s.finalScore, 0) / completedSubs.length) * 10) / 10
+    : 0;
+
+  const passedCount = completedSubs.filter(s => s.isPassed).length;
+  const passRate = completedSubs.length > 0 ? Math.round((passedCount / completedSubs.length) * 100) : 0;
+
+  res.json({
+    success: true,
+    data: {
+      organization: org,
+      totalTeachers: teachers.length,
+      totalClasses: classes.length,
+      totalStudents: students.length,
+      totalExams: exams.length,
+      totalSubmissions: submissions.length,
+      averageScore: avgScore,
+      passRatePercent: passRate,
+      quotaUsed: org?.quotaUsed || 0,
+      quotaLimit: org?.quotaLimit || 500,
+      recentTeachers: teachers.slice(0, 5),
+      recentExams: exams.slice(0, 5),
+    },
+  });
+});
+
+apiRouter.get('/school/teachers', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const teachers = db.getTeachers(req.user!.orgId);
+  res.json({ success: true, data: teachers });
+});
+
+apiRouter.post('/school/teachers', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const { email, fullName, nip } = req.body;
+  if (!email || !fullName) {
+    return res.status(400).json({ success: false, error: 'Email dan nama lengkap guru wajib diisi.' });
+  }
+  try {
+    const teacher = db.createTeacher(req.user!.orgId, { email, fullName, nip });
+    db.addAuditLog({
+      orgId: req.user!.orgId,
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: 'TEACHER_CREATED',
+      entityType: 'User',
+      entityId: teacher.id,
+      details: { email, fullName, nip },
+    });
+    res.status(201).json({ success: true, data: teacher });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.patch('/school/teachers/:id/status', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const { isActive } = req.body;
+  try {
+    const updated = db.toggleTeacherStatus(req.user!.orgId, req.params.id, Boolean(isActive));
+    db.addAuditLog({
+      orgId: req.user!.orgId,
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: 'TEACHER_STATUS_UPDATED',
+      entityType: 'User',
+      entityId: req.params.id,
+      details: { isActive },
+    });
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.get('/school/classes', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const classes = db.getClasses(req.user!.orgId);
+  res.json({ success: true, data: classes });
+});
+
+apiRouter.get('/school/students', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const { classId, search } = req.query;
+  const students = db.getStudents(req.user!.orgId, classId as string, search as string);
+  res.json({ success: true, data: students });
+});
+
+apiRouter.get('/school/exams', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const exams = db.getExams(req.user!.orgId);
+  res.json({ success: true, data: exams });
+});
+
+apiRouter.get('/school/reports', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const orgId = req.user!.orgId;
+  const submissions = db.getSubmissions(orgId);
+  const exams = db.getExams(orgId);
+  const classes = db.getClasses(orgId);
+
+  res.json({
+    success: true,
+    data: {
+      totalSubmissions: submissions.length,
+      examsCount: exams.length,
+      classesCount: classes.length,
+      submissions: submissions.slice(0, 25),
+    },
+  });
+});
+
+apiRouter.get('/school/subscription', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const org = db.getOrganization(req.user!.orgId);
+  res.json({
+    success: true,
+    data: {
+      organizationName: org?.name,
+      planType: org?.planType || 'SEKOLAH_MANDIRI',
+      quotaLimit: org?.quotaLimit || 500,
+      quotaUsed: org?.quotaUsed || 0,
+      quotaRemaining: Math.max(0, (org?.quotaLimit || 500) - (org?.quotaUsed || 0)),
+      renewalDate: '2026-12-31',
+      invoiceHistory: [
+        { id: 'INV-2026-001', date: '2026-01-10', amountIdr: 450000, status: 'LUNAS', plan: 'Paket Sekolah Mandiri' },
+        { id: 'INV-2026-002', date: '2026-02-10', amountIdr: 450000, status: 'LUNAS', plan: 'Paket Sekolah Mandiri' },
+        { id: 'INV-2026-003', date: '2026-03-10', amountIdr: 450000, status: 'LUNAS', plan: 'Paket Sekolah Mandiri' },
+      ],
+    },
+  });
+});
+
+apiRouter.put('/school/settings', requireAuth, requireRole('SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const updated = db.updateSchoolSettings(req.user!.orgId, req.body);
+    db.addAuditLog({
+      orgId: req.user!.orgId,
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: 'SCHOOL_SETTINGS_UPDATED',
+      entityType: 'Organization',
+      entityId: req.user!.orgId,
+      details: req.body,
+    });
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ==========================================
+// SUPERADMIN ENDPOINTS (/api/superadmin/*)
+// Platform oversight, tenant governance & AI metrics
+// ==========================================
+
+apiRouter.get('/superadmin/dashboard', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const orgs = db.getAllOrganizationsDetailed();
+  const users = db.getAllPlatformUsers();
+  const usage = db.getPlatformUsageMetrics();
+  const aiCosts = db.getAICostMetrics();
+  const health = db.getSystemHealthMetrics();
+
+  res.json({
+    success: true,
+    data: {
+      totalOrganizations: orgs.length,
+      activeOrganizations: orgs.filter(o => o.status !== 'SUSPENDED').length,
+      totalUsers: users.length,
+      totalTeachers: users.filter(u => u.role === 'TEACHER').length,
+      totalGradedPapers: usage.totalSubmissions,
+      geminiApiCalls: aiCosts.totalApiCalls,
+      estimatedAiCostIdr: aiCosts.estimatedCostIdr,
+      systemHealth: health.status,
+      recentOrgs: orgs.slice(0, 5),
+    },
+  });
+});
+
+apiRouter.get('/superadmin/organizations', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const orgs = db.getAllOrganizationsDetailed();
+  res.json({ success: true, data: orgs });
+});
+
+apiRouter.patch('/superadmin/organizations/:id/status', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const { status } = req.body;
+  if (status !== 'ACTIVE' && status !== 'SUSPENDED') {
+    return res.status(400).json({ success: false, error: 'Status harus ACTIVE atau SUSPENDED.' });
+  }
+  try {
+    const org = db.toggleOrganizationStatus(req.params.id, status);
+    db.addAuditLog({
+      orgId: req.user!.orgId,
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: 'ORGANIZATION_STATUS_MODIFIED',
+      entityType: 'Organization',
+      entityId: req.params.id,
+      details: { newStatus: status },
+    });
+    res.json({ success: true, data: org });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.patch('/superadmin/organizations/:id/quota', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const { quotaLimit, planType } = req.body;
+  if (typeof quotaLimit !== 'number' || quotaLimit < 0) {
+    return res.status(400).json({ success: false, error: 'Batas kuota tidak valid.' });
+  }
+  try {
+    const org = db.updateOrganizationQuota(req.params.id, quotaLimit, planType);
+    db.addAuditLog({
+      orgId: req.user!.orgId,
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: 'ORGANIZATION_QUOTA_MODIFIED',
+      entityType: 'Organization',
+      entityId: req.params.id,
+      details: { quotaLimit, planType },
+    });
+    res.json({ success: true, data: org });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+apiRouter.get('/superadmin/users', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const users = db.getAllPlatformUsers();
+  res.json({ success: true, data: users });
+});
+
+apiRouter.get('/superadmin/plans', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  res.json({
+    success: true,
+    data: [
+      {
+        id: 'FREE_TRIAL',
+        name: 'Paket Uji Coba Guru Mandiri',
+        priceMonthlyIdr: 0,
+        quotaPerMonth: 100,
+        activeSubscribers: 12,
+        features: ['100 koreksi/bulan', 'OCR LJK Standar', 'Analisis Esai Gemini Flash', 'Ekspor CSV'],
+      },
+      {
+        id: 'SEKOLAH_MANDIRI',
+        name: 'Paket Sekolah Mandiri',
+        priceMonthlyIdr: 450000,
+        quotaPerMonth: 1500,
+        activeSubscribers: 48,
+        features: ['1.500 koreksi/bulan', 'Manajemen Multi-Kelas', 'Rubrik Esai Kustom', 'Ekspor PDF & Excel', 'Dukungan WhatsApp'],
+      },
+      {
+        id: 'TERPADU_DINAS',
+        name: 'Paket Terpadu Instansi / Dinas',
+        priceMonthlyIdr: 1850000,
+        quotaPerMonth: 10000,
+        activeSubscribers: 6,
+        features: ['10.000 koreksi/bulan', 'Dashboard Multi-Sekolah', 'Integrasi Dapodik API', 'SLA 99.9%', 'Dedicated Account Manager'],
+      },
+    ],
+  });
+});
+
+apiRouter.get('/superadmin/subscriptions', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const orgs = db.getAllOrganizationsDetailed();
+  const subs = orgs.map(org => ({
+    organizationId: org.id,
+    organizationName: org.name,
+    planType: org.planType,
+    status: org.status,
+    quotaUsed: org.quotaUsed,
+    quotaLimit: org.quotaLimit,
+    renewalDate: '2026-12-31',
+    mrrIdr: org.planType === 'TERPADU_DINAS' ? 1850000 : org.planType === 'SEKOLAH_MANDIRI' ? 450000 : 0,
+  }));
+  res.json({ success: true, data: subs });
+});
+
+apiRouter.get('/superadmin/usage', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const usage = db.getPlatformUsageMetrics();
+  res.json({ success: true, data: usage });
+});
+
+apiRouter.get('/superadmin/ai-costs', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const aiMetrics = db.getAICostMetrics();
+  res.json({ success: true, data: aiMetrics });
+});
+
+apiRouter.get('/superadmin/audit-logs', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const logs = db.getAuditLogs('org-smpn1-nusantara');
+  res.json({ success: true, data: logs });
+});
+
+apiRouter.get('/superadmin/system-health', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const health = db.getSystemHealthMetrics();
+  res.json({ success: true, data: health });
+});
+
+apiRouter.get('/superadmin/settings', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req: AuthenticatedRequest, res: Response) => {
+  const settings = db.getPlatformSettings();
+  res.json({ success: true, data: settings });
+});
+
+apiRouter.post('/superadmin/settings', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  const updated = db.updatePlatformSettings(req.body);
+  res.json({ success: true, data: updated });
+});
+
+// Backward-compatible Admin endpoints
+apiRouter.get('/admin/organizations', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN'), (_req, res) => {
   res.json({
     success: true,
     data: db.getAllOrganizations(),
   });
 });
 
-apiRouter.get('/admin/audit-logs', requireAuth, requireRole('PLATFORM_ADMIN', 'SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+apiRouter.get('/admin/audit-logs', requireAuth, requireRole('SUPERADMIN', 'PLATFORM_ADMIN', 'SCHOOL_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
   const logs = db.getAuditLogs(req.user!.orgId);
   res.json({ success: true, data: logs });
 });
+

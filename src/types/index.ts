@@ -1,11 +1,29 @@
 import { z } from 'zod';
 
-export type UserRole = 'PLATFORM_ADMIN' | 'SCHOOL_ADMIN' | 'TEACHER';
+export type UserRole = 'SUPERADMIN' | 'PLATFORM_ADMIN' | 'SCHOOL_ADMIN' | 'TEACHER';
 export type ExamStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
 export type QuestionType = 'MULTIPLE_CHOICE' | 'SHORT_ANSWER' | 'ESSAY';
 export type SubmissionStatus = 'QUEUED' | 'PROCESSING' | 'NEEDS_REVIEW' | 'COMPLETED' | 'FAILED';
 export type JobStatus = 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
 export type PlanType = 'FREE_TRIAL' | 'SEKOLAH_MANDIRI' | 'TERPADU_DINAS';
+
+export function isSuperAdmin(role?: string): boolean {
+  return role === 'SUPERADMIN' || role === 'PLATFORM_ADMIN';
+}
+
+export function isSchoolAdmin(role?: string): boolean {
+  return role === 'SCHOOL_ADMIN';
+}
+
+export function isTeacher(role?: string): boolean {
+  return role === 'TEACHER';
+}
+
+export function getDefaultDashboard(role?: UserRole): string {
+  if (isSuperAdmin(role)) return '/superadmin/dashboard';
+  if (isSchoolAdmin(role)) return '/school/dashboard';
+  return '/teacher/dashboard';
+}
 
 export interface UserSession {
   id: string;
@@ -209,6 +227,7 @@ export interface OrganizationModel {
   planType: PlanType;
   quotaLimit: number;
   quotaUsed: number;
+  status?: 'ACTIVE' | 'SUSPENDED';
   createdAt: string;
 }
 

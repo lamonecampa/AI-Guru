@@ -62,7 +62,7 @@ export const apiClient = {
     return data;
   },
 
-  async switchDemoRole(role: 'PLATFORM_ADMIN' | 'SCHOOL_ADMIN' | 'TEACHER_SITI' | 'TEACHER_BUDI') {
+  async switchDemoRole(role: 'SUPERADMIN' | 'PLATFORM_ADMIN' | 'SCHOOL_ADMIN' | 'TEACHER_SITI' | 'TEACHER_BUDI') {
     const data: any = await this.request('/api/auth/demo-switch', {
       method: 'POST',
       body: JSON.stringify({ role }),

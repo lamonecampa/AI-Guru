@@ -96,10 +96,20 @@ export function requireRole(...allowedRoles: UserRole[]) {
       });
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
+    const userRole = req.user.role;
+    const isSuperRole = userRole === 'SUPERADMIN' || userRole === 'PLATFORM_ADMIN';
+
+    const hasPermission = allowedRoles.some((role) => {
+      if (role === 'SUPERADMIN' || role === 'PLATFORM_ADMIN') {
+        return isSuperRole;
+      }
+      return role === userRole;
+    });
+
+    if (!hasPermission) {
       return res.status(403).json({
         success: false,
-        error: 'Akses ditolak: Anda tidak memiliki wewenang untuk tindakan ini.',
+        error: `Akses ditolak: Peran ${userRole} tidak memiliki izin untuk rute ini.`,
       });
     }
 
