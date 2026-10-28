@@ -1,0 +1,374 @@
+// Prisma Schema for AI Teacher Grader (Indonesian Education SaaS)
+// Database: PostgreSQL with UUIDs, foreign keys, and indexes
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  PLATFORM_ADMIN
+  SCHOOL_ADMIN
+  TEACHER
+}
+
+enum ExamStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  SHORT_ANSWER
+  ESSAY
+}
+
+enum SubmissionStatus {
+  QUEUED
+  PROCESSING
+  NEEDS_REVIEW
+  COMPLETED
+  FAILED
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum PlanType {
+  FREE_TRIAL
+  SEKOLAH_MANDIRI
+  TERPADU_DINAS
+}
+
+model Organization {
+  id           String        @id @default(uuid()) @db.Uuid
+  name         String        @db.VarChar(255)
+  npsn         String?       @unique @db.VarChar(20) // Nomor Pokok Sekolah Nasional
+  address      String?       @db.Text
+  city         String?       @db.VarChar(100)
+  province     String?       @db.VarChar(100)
+  postalCode   String?       @db.VarChar(10)
+  phone        String?       @db.VarChar(30)
+  planType     PlanType      @default(FREE_TRIAL)
+  quotaLimit   Int           @default(100) // Lembar koreksi per bulan
+  quotaUsed    Int           @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  users        User[]
+  classes      ClassRoom[]
+  students     Student[]
+  exams        Exam[]
+  submissions  Submission[]
+  gradingJobs  GradingJob[]
+  auditLogs    AuditLog[]
+  usageRecords UsageRecord[]
+  subscription Subscription?
+
+  @@index([npsn])
+}
+
+model User {
+  id             String       @id @default(uuid()) @db.Uuid
+  orgId          String       @db.Uuid
+  email          String       @unique @db.VarChar(255)
+  passwordHash   String       @db.VarChar(255)
+  fullName       String       @db.VarChar(255)
+  role           UserRole     @default(TEACHER)
+  nip            String?      @db.VarChar(50) // Nomor Induk Pegawai
+  avatarUrl      String?      @db.Text
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  classesTaught  ClassRoom[]  @relation("TeacherClasses")
+  createdExams   Exam[]       @relation("ExamCreator")
+  reviewedSubmissions Submission[] @relation("Reviewer")
+  auditLogs      AuditLog[]
+
+  @@index([orgId, role])
+  @@index([email])
+}
+
+model ClassRoom {
+  id           String       @id @default(uuid()) @db.Uuid
+  orgId        String       @db.Uuid
+  name         String       @db.VarChar(100) // contoh: IX-A, X-IPA-1
+  gradeLevel   String       @db.VarChar(20)  // contoh: Kelas 9, Kelas 10
+  academicYear String       @db.VarChar(20)  // contoh: 2026/2027
+  teacherId    String?      @db.Uuid
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  teacher      User?        @relation("TeacherClasses", fields: [teacherId], references: [id], onDelete: SetNull)
+  students     Student[]
+  examAssignments ExamClassAssignment[]
+
+  @@index([orgId, academicYear])
+}
+
+model Student {
+  id           String        @id @default(uuid()) @db.Uuid
+  orgId        String        @db.Uuid
+  classId      String        @db.Uuid
+  nisn         String        @unique @db.VarChar(20) // Nomor Induk Siswa Nasional
+  nis          String        @db.VarChar(20)         // Nomor Induk Siswa
+  fullName     String        @db.VarChar(255)
+  gender       String        @db.VarChar(10)         // L / P
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  classRoom    ClassRoom     @relation(fields: [classId], references: [id], onDelete: Restrict)
+  submissions  Submission[]
+
+  @@index([orgId, classId])
+  @@index([nisn])
+  @@index([nis])
+}
+
+model Exam {
+  id           String        @id @default(uuid()) @db.Uuid
+  orgId        String        @db.Uuid
+  createdById  String        @db.Uuid
+  title        String        @db.VarChar(255)
+  subject      String        @db.VarChar(100) // contoh: Bahasa Indonesia, Matematika, Biologi
+  gradeLevel   String        @db.VarChar(50)  // contoh: Kelas 9 SMP, Kelas 11 SMA
+  academicYear String        @db.VarChar(20)
+  semester     String        @db.VarChar(20)  // Ganjil / Genap
+  examDate     DateTime      @db.Date
+  durationMinutes Int        @default(90)
+  maxScore     Decimal       @default(100) @db.Decimal(5, 2)
+  passingScore Decimal       @default(75) @db.Decimal(5, 2) // Kriteria Ketuntasan Minimal (KKM)
+  status       ExamStatus    @default(DRAFT)
+  currentVersion Int         @default(1)
+  description  String?       @db.Text
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  creator      User          @relation("ExamCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  versions     ExamVersion[]
+  questions    Question[]
+  assignedClasses ExamClassAssignment[]
+  submissions  Submission[]
+
+  @@index([orgId, status])
+  @@index([orgId, subject])
+}
+
+model ExamClassAssignment {
+  id           String       @id @default(uuid()) @db.Uuid
+  examId       String       @db.Uuid
+  classId      String       @db.Uuid
+
+  exam         Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  classRoom    ClassRoom    @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@unique([examId, classId])
+}
+
+model ExamVersion {
+  id            String       @id @default(uuid()) @db.Uuid
+  examId        String       @db.Uuid
+  versionNumber Int
+  snapshotData  Json         // Full snapshot of questions, answer keys, rubrics at release
+  changeSummary String?      @db.Text
+  createdAt     DateTime     @default(now())
+
+  exam          Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  submissions   Submission[]
+
+  @@unique([examId, versionNumber])
+}
+
+model Question {
+  id                   String        @id @default(uuid()) @db.Uuid
+  examId               String        @db.Uuid
+  questionNumber       Int
+  type                 QuestionType
+  text                 String        @db.Text
+  maxPoints            Decimal       @db.Decimal(5, 2)
+  options              Json?         // Pilihan A, B, C, D, E untuk pilihan ganda
+  correctOption        String?       @db.VarChar(10) // 'A', 'B', 'C', 'D', 'E'
+  acceptedAlternatives Json?         // Array of acceptable alternative answers
+  explanation          String?       @db.Text
+  learningObjective    String?       @db.VarChar(255) // Capaian Pembelajaran / Kompetensi Dasar
+  rubricCriteria       Json?         // Array criteria untuk soal esai
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  exam                 Exam          @relation(fields: [examId], references: [id], onDelete: Cascade)
+  answers              AnswerResult[]
+
+  @@unique([examId, questionNumber])
+  @@index([examId, type])
+}
+
+model Submission {
+  id                   String           @id @default(uuid()) @db.Uuid
+  orgId                String           @db.Uuid
+  examId               String           @db.Uuid
+  examVersionId        String?          @db.Uuid
+  studentId            String           @db.Uuid
+  reviewedById         String?          @db.Uuid
+  status               SubmissionStatus @default(QUEUED)
+  finalScore           Decimal?         @db.Decimal(5, 2)
+  maxScore             Decimal          @default(100) @db.Decimal(5, 2)
+  percentageScore      Decimal?         @db.Decimal(5, 2)
+  isPassed             Boolean?
+  multipleChoiceStats  Json?            // { correct: 20, wrong: 4, unanswered: 1, total: 25 }
+  manualOverrideReason String?          @db.Text
+  reviewedAt           DateTime?
+  publishedAt          DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  exam                 Exam             @relation(fields: [examId], references: [id], onDelete: Restrict)
+  examVersion          ExamVersion?     @relation(fields: [examVersionId], references: [id], onDelete: SetNull)
+  student              Student          @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  reviewer             User?            @relation("Reviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  files                SubmissionFile[]
+  answers              AnswerResult[]
+  gradingJobs          GradingJob[]
+
+  @@index([orgId, examId, status])
+  @@index([orgId, studentId])
+}
+
+model SubmissionFile {
+  id             String     @id @default(uuid()) @db.Uuid
+  submissionId   String     @db.Uuid
+  fileKey        String     @unique @db.VarChar(255) // Storage key (opaque UUID)
+  originalName   String     @db.VarChar(255)
+  mimeType       String     @db.VarChar(100)
+  sizeBytes      Int
+  width          Int?
+  height         Int?
+  sha256Hash     String     @db.VarChar(64)
+  pageNumber     Int        @default(1)
+  qualityScore   Decimal?   @db.Decimal(3, 2)
+  qualityFlags   Json?      // e.g. ["BLUR_WARNING", "LOW_RESOLUTION"]
+  storageUrl     String?    @db.Text
+  createdAt      DateTime   @default(now())
+
+  submission     Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, pageNumber])
+  @@index([sha256Hash])
+}
+
+model AnswerResult {
+  id                    String        @id @default(uuid()) @db.Uuid
+  submissionId          String        @db.Uuid
+  questionId            String        @db.Uuid
+  questionNumber        Int
+  questionType          QuestionType
+  studentAnswerRaw      String?       @db.Text // Raw recognized text from OCR/Vision
+  recognizedAnswer      String?       @db.Text // Normalized answer ('B', or normalized essay response)
+  isCorrect             Boolean?
+  score                 Decimal       @default(0) @db.Decimal(5, 2)
+  maxScore              Decimal       @db.Decimal(5, 2)
+  criterionScores       Json?         // Detail poin per rubrik kriteria untuk esai
+  evidence              String?       @db.Text // Bukti kutipan dari jawaban siswa
+  explanation           String?       @db.Text // Penjelasan evaluasi AI
+  correction            String?       @db.Text // Konsep yang benar jika siswa keliru
+  suggestions           String?       @db.Text // Rekomendasi perbaikan belajar
+  confidence            Decimal?      @db.Decimal(3, 2) // 0.00 - 1.00
+  reviewRequired        Boolean       @default(false)
+  manualOverrideScore   Decimal?      @db.Decimal(5, 2)
+  manualOverrideReason  String?       @db.Text
+  overrideHistory       Json?         // Array of { changedBy, oldScore, newScore, reason, timestamp }
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  submission            Submission    @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question              Question      @relation(fields: [questionId], references: [id], onDelete: Restrict)
+
+  @@unique([submissionId, questionId])
+  @@index([submissionId, reviewRequired])
+}
+
+model GradingJob {
+  id                 String     @id @default(uuid()) @db.Uuid
+  orgId              String     @db.Uuid
+  submissionId       String     @db.Uuid
+  status             JobStatus  @default(QUEUED)
+  progressPercentage Int        @default(0)
+  currentStep        String     @db.VarChar(100) // e.g. 'VALIDATING_IMAGE', 'EXTRACTING_TEXT', 'OBJECTIVE_SCORING', 'ESSAY_AI_GRADING', 'CALCULATING_TOTALS'
+  errorMessage       String?    @db.Text
+  retryCount         Int        @default(0)
+  idempotencyKey     String     @unique @db.VarChar(255)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  organization       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  submission         Submission   @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([submissionId])
+}
+
+model Subscription {
+  id               String       @id @default(uuid()) @db.Uuid
+  orgId            String       @unique @db.Uuid
+  planType         PlanType     @default(FREE_TRIAL)
+  status           String       @default("ACTIVE") // ACTIVE, PAST_DUE, CANCELLED
+  currentPeriodEnd DateTime
+  monthlyQuota     Int          @default(100)
+  usedQuota        Int          @default(0)
+  paymentProvider  String?      @default("MANUAL_INVOICE") // e.g. MIDTRANS, XENDIT, MANUAL_INVOICE
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  organization     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+model UsageRecord {
+  id             String       @id @default(uuid()) @db.Uuid
+  orgId          String       @db.Uuid
+  yearMonth      String       @db.VarChar(7) // e.g. '2026-10'
+  gradedSheets   Int          @default(0)
+  essayEvaluations Int        @default(0)
+  storageBytes   BigInt       @default(0)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, yearMonth])
+}
+
+model AuditLog {
+  id           String       @id @default(uuid()) @db.Uuid
+  orgId        String       @db.Uuid
+  userId       String?      @db.Uuid
+  userEmail    String       @db.VarChar(255)
+  action       String       @db.VarChar(100) // e.g. 'SUBMISSION_OVERRIDE', 'EXAM_PUBLISHED', 'STUDENT_IMPORTED'
+  entityType   String       @db.VarChar(50)
+  entityId     String       @db.VarChar(100)
+  details      Json?
+  ipAddress    String?      @db.VarChar(50)
+  timestamp    DateTime     @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, action])
+  @@index([orgId, timestamp])
+}

@@ -1,0 +1,6 @@
+{
+  "name": "AI Teacher Grader",
+  "description": "Platform SaaS koreksi lembar jawaban otomatis (pilihan ganda & esai) berbasis AI untuk guru dan sekolah di Indonesia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
