@@ -26,7 +26,7 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  const [activeTab, setActiveTab] = useState<'ALL' | 'MC' | 'ESSAY'>('ALL');
+  const [activeTab, setActiveTab] = useState<'ALL' | 'MC' | 'SHORT_ANSWER' | 'ESSAY'>('ALL');
 
   useEffect(() => {
     loadExamAndQuestions();
@@ -45,7 +45,7 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
     }
   };
 
-  const handleAddQuestion = (type: 'MULTIPLE_CHOICE' | 'ESSAY') => {
+  const handleAddQuestion = (type: 'MULTIPLE_CHOICE' | 'SHORT_ANSWER' | 'ESSAY') => {
     const nextNum = questions.length + 1;
     if (type === 'MULTIPLE_CHOICE') {
       const newQ: QuestionModel = {
@@ -62,6 +62,20 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
           { key: 'D', text: '' },
         ],
         correctOption: 'A',
+        explanation: '',
+        learningObjective: '',
+      };
+      setQuestions([...questions, newQ]);
+    } else if (type === 'SHORT_ANSWER') {
+      const newQ: QuestionModel = {
+        id: `temp-q-${Date.now()}`,
+        examId,
+        questionNumber: nextNum,
+        type: 'SHORT_ANSWER',
+        text: '',
+        maxPoints: 10,
+        correctOption: '',
+        acceptedAlternatives: [],
         explanation: '',
         learningObjective: '',
       };
@@ -148,6 +162,7 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
 
   const filteredQuestions = questions.filter((q) => {
     if (activeTab === 'MC') return q.type === 'MULTIPLE_CHOICE';
+    if (activeTab === 'SHORT_ANSWER') return q.type === 'SHORT_ANSWER';
     if (activeTab === 'ESSAY') return q.type === 'ESSAY';
     return true;
   });
@@ -223,6 +238,16 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
             Pilihan Ganda ({questions.filter((q) => q.type === 'MULTIPLE_CHOICE').length})
           </button>
           <button
+            onClick={() => setActiveTab('SHORT_ANSWER')}
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+              activeTab === 'SHORT_ANSWER'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Isian Singkat ({questions.filter((q) => q.type === 'SHORT_ANSWER').length})
+          </button>
+          <button
             onClick={() => setActiveTab('ESSAY')}
             className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
               activeTab === 'ESSAY'
@@ -241,6 +266,13 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
           >
             <Plus className="w-3.5 h-3.5" />
             <span>+ Pilihan Ganda</span>
+          </button>
+          <button
+            onClick={() => handleAddQuestion('SHORT_ANSWER')}
+            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>+ Isian Singkat</span>
           </button>
           <button
             onClick={() => handleAddQuestion('ESSAY')}
@@ -273,7 +305,11 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
                       {q.questionNumber}
                     </span>
                     <span className="text-xs font-semibold text-slate-700">
-                      {q.type === 'MULTIPLE_CHOICE' ? 'Pilihan Ganda (Skoring Deterministik)' : 'Esai (Evaluasi AI & Rubrik)'}
+                      {q.type === 'MULTIPLE_CHOICE'
+                        ? 'Pilihan Ganda (Skoring Deterministik)'
+                        : q.type === 'SHORT_ANSWER'
+                        ? 'Isian Singkat (Pencocokan Kunci & Alternatif)'
+                        : 'Esai (Evaluasi AI & Rubrik)'}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
@@ -364,6 +400,50 @@ export const ExamQuestionsPage: React.FC<ExamQuestionsPageProps> = ({
                         </div>
                       ))}
                     </div>
+                  </div>
+                ) : q.type === 'SHORT_ANSWER' ? (
+                  /* If Short Answer: Key & Accepted Alternatives */
+                  <div className="space-y-3 pt-2">
+                    <div className="text-xs font-semibold text-slate-700">
+                      Kunci Jawaban Isian Singkat:
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Kunci Jawaban Utama (Wajib):
+                        </label>
+                        <input
+                          type="text"
+                          value={q.correctOption || ''}
+                          onChange={(e) =>
+                            handleUpdateQuestion(actualIndex, { correctOption: e.target.value })
+                          }
+                          placeholder="Contoh: Fotosintesis"
+                          className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Alternatif Jawaban Diterima (Pisahkan tanda koma):
+                        </label>
+                        <input
+                          type="text"
+                          value={(q.acceptedAlternatives || []).join(', ')}
+                          onChange={(e) => {
+                            const alts = e.target.value
+                              .split(',')
+                              .map((s) => s.trim())
+                              .filter(Boolean);
+                            handleUpdateQuestion(actualIndex, { acceptedAlternatives: alts });
+                          }}
+                          placeholder="Contoh: foto sintesis, proses fotosintesis"
+                          className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-700">
+                      💡 Mesin skoring deterministik secara otomatis mengabaikan huruf kapital/kecil, spasi ganda, dan tanda baca.
+                    </p>
                   </div>
                 ) : (
                   /* If Essay: Rubric Criteria Builder */

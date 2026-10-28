@@ -6,6 +6,31 @@ import {
   RubricCriterion,
 } from '../../types/index.ts';
 
+// Safe JSON Parser helper for Gemini responses (stripping markdown fences if present)
+export function safeParseJson(text: string | undefined | null): any {
+  if (!text) return {};
+  let clean = text.trim();
+  if (clean.startsWith('```json')) {
+    clean = clean.slice(7);
+  } else if (clean.startsWith('```')) {
+    clean = clean.slice(3);
+  }
+  if (clean.endsWith('```')) {
+    clean = clean.slice(0, -3);
+  }
+  try {
+    return JSON.parse(clean.trim());
+  } catch (err: any) {
+    // If partial JSON or parsing error, attempt substring extraction
+    const firstBrace = clean.indexOf('{');
+    const lastBrace = clean.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(clean.substring(firstBrace, lastBrace + 1));
+    }
+    throw err;
+  }
+}
+
 // Deterministic Multiple-Choice Scoring Engine
 export interface DeterministicScoringRule {
   unansweredScore: number; // default: 0
@@ -76,6 +101,63 @@ export function scoreMultipleChoiceQuestion(
     status: isMatch ? 'CORRECT' : 'WRONG',
     reviewRequired: false,
     note: isMatch ? 'Jawaban tepat sesuai kunci.' : `Jawaban siswa ${normOption}, kunci jawaban ${correct}.`,
+  };
+}
+
+// Deterministic Short-Answer Scoring Engine
+export function scoreShortAnswerQuestion(
+  question: QuestionModel,
+  recognizedAnswer: string | undefined | null
+): {
+  questionNumber: number;
+  studentAnswer: string;
+  isCorrect: boolean;
+  score: number;
+  maxPoints: number;
+  status: 'CORRECT' | 'WRONG' | 'UNANSWERED';
+  reviewRequired: boolean;
+  note: string;
+} {
+  const maxPts = Number(question.maxPoints) || 5;
+  const rawAns = recognizedAnswer ? recognizedAnswer.trim() : '';
+
+  if (!rawAns || rawAns === '-' || rawAns.toLowerCase() === 'kosong') {
+    return {
+      questionNumber: question.questionNumber,
+      studentAnswer: '',
+      isCorrect: false,
+      score: 0,
+      maxPoints: maxPts,
+      status: 'UNANSWERED',
+      reviewRequired: false,
+      note: 'Tidak ada jawaban tertulis untuk isian singkat ini.',
+    };
+  }
+
+  const normalize = (str: string) =>
+    str.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, '').replace(/\s+/g, ' ').trim();
+
+  const normStudent = normalize(rawAns);
+  const correctAnswers = [
+    question.correctOption || '',
+    ...(question.acceptedAlternatives || []),
+  ]
+    .map(normalize)
+    .filter(Boolean);
+
+  const isMatch = correctAnswers.some((ans) => ans === normStudent);
+
+  return {
+    questionNumber: question.questionNumber,
+    studentAnswer: rawAns,
+    isCorrect: isMatch,
+    score: isMatch ? maxPts : 0,
+    maxPoints: maxPts,
+    status: isMatch ? 'CORRECT' : 'WRONG',
+    reviewRequired: !isMatch && normStudent.length > 2, // flag for teacher review if student provided text that didn't strictly match
+    note: isMatch
+      ? 'Jawaban isian singkat tepat sesuai kunci/alternatif yang diterima.'
+      : `Jawaban "${rawAns}" belum cocok dengan kunci (${question.correctOption || question.acceptedAlternatives?.[0] || '-'}).`,
   };
 }
 
@@ -186,7 +268,7 @@ Keluarkan format JSON murni sesuai schema.`;
         },
       });
 
-      const parsed = JSON.parse(response.text || '{}');
+      const parsed = safeParseJson(response.text);
       const mcMap: Record<number, string> = {};
       (parsed.mcAnswers || []).forEach((item: any) => {
         mcMap[item.questionNumber] = item.selectedOption;
@@ -334,7 +416,7 @@ Instruksi Penilaian:
         },
       });
 
-      const parsed = JSON.parse(response.text || '{}');
+      const parsed = safeParseJson(response.text);
       parsed.questionId = question.id;
       parsed.maxScore = maxScore;
 

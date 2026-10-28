@@ -33,6 +33,7 @@ export class SchoolRepository {
   private questions: Map<string, QuestionModel> = new Map();
   private submissions: Map<string, SubmissionModel> = new Map();
   private gradingJobs: Map<string, GradingJobModel> = new Map();
+  private examVersions: Map<string, any> = new Map();
   private auditLogs: AuditLogModel[] = [];
 
   constructor() {
@@ -820,6 +821,21 @@ export class SchoolRepository {
     const exam = this.getExamById(orgId, examId);
     if (!exam) throw new Error('Ujian tidak ditemukan.');
 
+    // If submissions already exist for this exam, snapshot previous version and increment version
+    const existingSubs = this.getSubmissions(orgId, examId);
+    if (existingSubs.length > 0) {
+      const currentQuestions = this.getQuestionsByExamId(orgId, examId);
+      const versionId = `ver-${examId}-v${exam.currentVersion}`;
+      this.examVersions.set(versionId, {
+        id: versionId,
+        examId,
+        versionNumber: exam.currentVersion,
+        snapshotData: currentQuestions,
+        createdAt: new Date().toISOString(),
+      });
+      exam.currentVersion += 1;
+    }
+
     // Remove existing
     Array.from(this.questions.entries()).forEach(([qid, q]) => {
       if (q.examId === examId) {
@@ -829,7 +845,7 @@ export class SchoolRepository {
 
     let totalPoints = 0;
     const saved: QuestionModel[] = questionsList.map((q, idx) => {
-      const qid = q.id || `q-${crypto.randomUUID().slice(0, 8)}`;
+      const qid = q.id && !q.id.startsWith('temp-') ? q.id : `q-${crypto.randomUUID().slice(0, 8)}`;
       const model: QuestionModel = {
         ...q,
         id: qid,
@@ -847,6 +863,30 @@ export class SchoolRepository {
     exam.updatedAt = new Date().toISOString();
 
     return saved;
+  }
+
+  public getExamVersions(orgId: string, examId: string): any[] {
+    const exam = this.getExamById(orgId, examId);
+    if (!exam) return [];
+    return Array.from(this.examVersions.values()).filter(v => v.examId === examId);
+  }
+
+  // Teacher authorization check
+  public canUserManageExam(user: { id: string; role: string; orgId: string }, examId: string): boolean {
+    const exam = this.exams.get(examId);
+    if (!exam || exam.orgId !== user.orgId) return false;
+
+    // Platform and school admins can manage any exam in their org
+    if (user.role === 'PLATFORM_ADMIN' || user.role === 'SCHOOL_ADMIN') return true;
+
+    // Teacher can manage if they created it or teach an assigned class
+    if (exam.createdById === user.id) return true;
+    const teachesAssignedClass = (exam.assignedClassIds || []).some((cid) => {
+      const cls = this.classes.get(cid);
+      return cls && cls.teacherId === user.id;
+    });
+
+    return teachesAssignedClass;
   }
 
   // Submissions

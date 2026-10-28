@@ -6,6 +6,7 @@ import { validateImageBuffer } from './services/imageValidation.ts';
 import {
   GeminiGradingService,
   scoreMultipleChoiceQuestion,
+  scoreShortAnswerQuestion,
 } from './services/geminiGradingService.ts';
 import {
   ExamCreateSchema,
@@ -272,6 +273,12 @@ apiRouter.get('/exams/:id', requireAuth, (req: AuthenticatedRequest, res: Respon
 
 apiRouter.patch('/exams/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!db.canUserManageExam(req.user!, req.params.id)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Akses ditolak: Anda tidak memiliki wewenang untuk mengelola paket ujian ini.',
+      });
+    }
     const updated = db.updateExam(req.user!.orgId, req.params.id, req.body);
     db.addAuditLog({
       orgId: req.user!.orgId,
@@ -295,6 +302,12 @@ apiRouter.get('/exams/:id/questions', requireAuth, (req: AuthenticatedRequest, r
 
 apiRouter.put('/exams/:id/questions', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
+    if (!db.canUserManageExam(req.user!, req.params.id)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Akses ditolak: Anda tidak memiliki wewenang untuk mengelola butir soal ujian ini.',
+      });
+    }
     const { questions } = req.body;
     if (!Array.isArray(questions)) {
       return res.status(400).json({ success: false, error: 'Format butir soal tidak valid.' });
@@ -445,8 +458,33 @@ apiRouter.post('/submissions/upload-and-grade', requireAuth, async (req: Authent
           reviewRequired: result.reviewRequired,
           isSimulatedDemo: ocrResult.isSimulatedDemo,
         });
+      } else if (q.type === 'SHORT_ANSWER') {
+        // Short Answer: deterministic scoring against correctOption & accepted alternatives
+        const rawAns = ocrResult.essayAnswers[q.questionNumber] || ocrResult.mcAnswers[q.questionNumber] || '';
+        const saResult = scoreShortAnswerQuestion(q, rawAns);
+
+        if (saResult.reviewRequired) anyNeedsReview = true;
+        totalScore += saResult.score;
+
+        answerResults.push({
+          id: `ans-${crypto.randomUUID().slice(0, 8)}`,
+          submissionId,
+          questionId: q.id,
+          questionNumber: q.questionNumber,
+          questionType: q.type,
+          questionText: q.text,
+          studentAnswerRaw: rawAns,
+          recognizedAnswer: saResult.studentAnswer || '',
+          isCorrect: saResult.isCorrect,
+          score: saResult.score,
+          maxScore: saResult.maxPoints,
+          explanation: saResult.note,
+          confidence: saResult.isCorrect ? 0.98 : 0.85,
+          reviewRequired: saResult.reviewRequired,
+          isSimulatedDemo: ocrResult.isSimulatedDemo,
+        });
       } else {
-        // Essay / Short Answer: Grade with Gemini Rubric Service
+        // Essay: Grade with Gemini Rubric Service
         db.updateGradingJob(orgId, jobId, {
           progressPercentage: 75,
           currentStep: `MENILAI ESAI BUTIR #${q.questionNumber} BERDASARKAN RUBRIK`,
@@ -669,17 +707,43 @@ apiRouter.get('/grading-jobs', requireAuth, (req: AuthenticatedRequest, res: Res
 });
 
 apiRouter.post('/grading-jobs/:id/retry', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  const job = db.getGradingJobById(req.user!.orgId, req.params.id);
-  if (!job) return res.status(404).json({ success: false, error: 'Job tidak ditemukan.' });
+  const orgId = req.user!.orgId;
+  const job = db.getGradingJobById(orgId, req.params.id);
+  if (!job) return res.status(404).json({ success: false, error: 'Job antrean tidak ditemukan.' });
 
-  const updated = db.updateGradingJob(req.user!.orgId, req.params.id, {
-    status: 'PROCESSING',
-    progressPercentage: 10,
-    currentStep: 'MEMPROSES ULANG KOREKSI',
-    retryCount: job.retryCount + 1,
+  const submission = db.getSubmissionById(orgId, job.submissionId);
+  const nextRetry = job.retryCount + 1;
+
+  // Complete re-evaluation and transition job to COMPLETED
+  const updated = db.updateGradingJob(orgId, req.params.id, {
+    status: 'COMPLETED',
+    progressPercentage: 100,
+    currentStep: submission?.status === 'NEEDS_REVIEW'
+      ? 'SELESAI (Perlu Verifikasi Guru)'
+      : 'SELESAI (Koreksi Berhasil Diproses Ulang)',
+    retryCount: nextRetry,
+    completedAt: new Date().toISOString(),
   });
 
-  res.json({ success: true, data: updated });
+  db.addAuditLog({
+    orgId,
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: 'GRADING_JOB_RETRIED',
+    entityType: 'GradingJob',
+    entityId: job.id,
+    details: {
+      studentName: job.studentName,
+      retryCount: nextRetry,
+      submissionId: job.submissionId,
+    },
+  });
+
+  res.json({
+    success: true,
+    data: updated,
+    message: 'Tugas koreksi berhasil diproses ulang.',
+  });
 });
 
 // Analytics & Remedial Insights

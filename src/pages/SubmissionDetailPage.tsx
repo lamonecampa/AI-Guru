@@ -379,6 +379,8 @@ export const SubmissionDetailPage: React.FC<SubmissionDetailPageProps> = ({
                         <span className="text-xs font-semibold text-slate-800">
                           {ans.questionType === 'MULTIPLE_CHOICE'
                             ? 'Pilihan Ganda'
+                            : ans.questionType === 'SHORT_ANSWER'
+                            ? 'Isian Singkat'
                             : 'Esai Berbobot Rubrik'}
                         </span>
                         {ans.isSimulatedDemo && (

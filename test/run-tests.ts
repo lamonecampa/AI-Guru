@@ -2,6 +2,7 @@ import assert from 'assert';
 import { db } from '../src/server/db/repository.ts';
 import {
   scoreMultipleChoiceQuestion,
+  scoreShortAnswerQuestion,
   GeminiGradingService,
 } from '../src/server/services/geminiGradingService.ts';
 import { validateImageBuffer } from '../src/server/services/imageValidation.ts';
@@ -156,6 +157,132 @@ async function runAllTests() {
     assert.strictEqual(updated.finalScore, newScore);
     assert.strictEqual(updated.manualOverrideReason, reason);
     assert.strictEqual(updated.status, 'COMPLETED');
+  });
+
+  // 6. Short-Answer Deterministic Scoring Engine
+  test('11. Mesin Skoring Isian Singkat: Pencocokan Kunci Utama & Alternatif Bebas Huruf Besar/Kecil', () => {
+    const q: any = {
+      questionNumber: 6,
+      type: 'SHORT_ANSWER',
+      maxPoints: 10,
+      correctOption: 'Fotosintesis',
+      acceptedAlternatives: ['proses fotosintesis', 'foto sintesis'],
+    };
+
+    // Test primary match with case & whitespace variance
+    const res1 = scoreShortAnswerQuestion(q, '  FOTOSINTESIS. ');
+    assert.strictEqual(res1.isCorrect, true);
+    assert.strictEqual(res1.score, 10);
+    assert.strictEqual(res1.status, 'CORRECT');
+    assert.strictEqual(res1.reviewRequired, false);
+
+    // Test accepted alternative match
+    const res2 = scoreShortAnswerQuestion(q, 'Proses Fotosintesis');
+    assert.strictEqual(res2.isCorrect, true);
+    assert.strictEqual(res2.score, 10);
+    assert.strictEqual(res2.status, 'CORRECT');
+  });
+
+  test('12. Mesin Skoring Isian Singkat: Jawaban Kosong & Jawaban Tidak Cocok Memicu Review', () => {
+    const q: any = {
+      questionNumber: 6,
+      type: 'SHORT_ANSWER',
+      maxPoints: 10,
+      correctOption: 'Fotosintesis',
+      acceptedAlternatives: ['proses fotosintesis'],
+    };
+
+    // Unanswered / blank
+    const blankRes = scoreShortAnswerQuestion(q, '');
+    assert.strictEqual(blankRes.status, 'UNANSWERED');
+    assert.strictEqual(blankRes.score, 0);
+    assert.strictEqual(blankRes.reviewRequired, false);
+
+    // Non-matching text should trigger teacher review
+    const wrongRes = scoreShortAnswerQuestion(q, 'Klorofil dan daun');
+    assert.strictEqual(wrongRes.status, 'WRONG');
+    assert.strictEqual(wrongRes.score, 0);
+    assert.strictEqual(wrongRes.reviewRequired, true, 'Jawaban esai/isian tidak cocok harus ditandai untuk review guru');
+  });
+
+  // 7. Role-Based Authorization & Exam Management Permission
+  test('13. Otorisasi Berbasis Peran: canUserManageExam (Guru Pengampu vs Lintas Organisasi)', () => {
+    const orgId = 'org-smpn1-nusantara';
+    const examId = 'exam-bio-asas-9';
+
+    // School admin in same org can manage
+    const adminUser = { id: 'user-admin-endang', role: 'SCHOOL_ADMIN', orgId };
+    assert.strictEqual(db.canUserManageExam(adminUser, examId), true);
+
+    // Creator teacher can manage
+    const creatorUser = { id: 'user-teacher-siti', role: 'TEACHER', orgId };
+    assert.strictEqual(db.canUserManageExam(creatorUser, examId), true);
+
+    // User from different org cannot manage
+    const crossOrgUser = { id: 'user-teacher-smamerdeka', role: 'TEACHER', orgId: 'org-smamerdeka5' };
+    assert.strictEqual(db.canUserManageExam(crossOrgUser, examId), false);
+  });
+
+  // 8. Exam Versioning Snapshotting
+  test('14. Versioning Snapshot: Menyimpan Versi Kunci & Soal Saat Diubah Pasca-Koreksi', () => {
+    const orgId = 'org-smpn1-nusantara';
+    const examId = 'exam-bio-asas-9';
+    const examBefore = db.getExamById(orgId, examId);
+    assert.ok(examBefore);
+    const initialVersion = examBefore.currentVersion;
+
+    const currentQuestions = db.getQuestionsByExamId(orgId, examId);
+    assert.ok(currentQuestions.length > 0);
+
+    // Save updated questions list
+    const modifiedQuestions = currentQuestions.map(q => ({
+      ...q,
+      text: q.text + ' (Direvisi)',
+    }));
+
+    db.saveQuestionsForExam(orgId, examId, modifiedQuestions);
+
+    const examAfter = db.getExamById(orgId, examId);
+    assert.ok(examAfter);
+    assert.strictEqual(examAfter.currentVersion, initialVersion + 1, 'Versi ujian harus bertambah setelah soal diperbarui saat submission sudah ada');
+
+    const versions = db.getExamVersions(orgId, examId);
+    assert.ok(versions.length > 0, 'Snapshot versi sebelumnya harus tersimpan');
+    assert.strictEqual(versions[0].versionNumber, initialVersion);
+  });
+
+  // 9. Grading Queue Retry Handling
+  test('15. Pemrosesan Ulang Tugas Koreksi (Retry Grading Job)', () => {
+    const orgId = 'org-smpn1-nusantara';
+    const jobId = `job-test-retry-${Date.now()}`;
+    const testJob = {
+      id: jobId,
+      orgId,
+      submissionId: 'sub-ahmad-02',
+      studentName: 'Ahmad Fauzi',
+      examTitle: 'ASAS IPA Biologi Kelas 9',
+      status: 'FAILED' as const,
+      progressPercentage: 50,
+      currentStep: 'GAGAL KARENA GANGGUAN JARINGAN',
+      retryCount: 0,
+      idempotencyKey: `idem-${jobId}`,
+      createdAt: new Date().toISOString(),
+    };
+
+    db.createGradingJob(testJob);
+
+    // Simulate retry transition
+    const retried = db.updateGradingJob(orgId, jobId, {
+      status: 'COMPLETED',
+      progressPercentage: 100,
+      currentStep: 'SELESAI (Koreksi Berhasil Diproses Ulang)',
+      retryCount: testJob.retryCount + 1,
+      completedAt: new Date().toISOString(),
+    });
+
+    assert.strictEqual(retried.status, 'COMPLETED');
+    assert.strictEqual(retried.retryCount, 1);
+    assert.strictEqual(retried.progressPercentage, 100);
   });
 
   console.log(`\nHasil Pengujian: ${passed} / ${total} lulus.\n`);
